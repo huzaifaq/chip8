@@ -1,0 +1,21 @@
+[package]
+name = "chip8"
+version = "0.1.0"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "1.20.0", features = ["full"] }
+futures-util = "0.3.21"
+futures-channel = "0.3.21"
+
+byteorder = "1.4.3"
+ctrlc = { version = "3.2.1", features = ["termination"] }
+rand = "0.8.5"
+tui = { version = "0.19", features = ["crossterm"], default-features = false }
+crossterm = "0.25"
+
+[[bin]]
+name = "chip8"
+path = "main.rs"
