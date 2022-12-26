@@ -2,13 +2,16 @@ mod display;
 mod keyboard;
 mod memory;
 mod registers;
+pub mod thread_messages;
 mod timers;
 
 use display::Chip8Display;
 use memory::Chip8Memory;
 use registers::Chip8Registers;
+use thread_messages::Chip8ControlMessage;
 use timers::Chip8Timers;
-use tokio::time::{self, Instant};
+use tokio::sync::mpsc::Receiver;
+use tokio::time::{self};
 
 use std::{fs, sync::Arc, sync::Mutex, time::Duration};
 
@@ -481,48 +484,116 @@ impl Chip8 {
     }
 
     //Start a thread
-    pub fn start_display_thread(&self) {
+    pub fn start_display_thread(
+        &self,
+        mut rx: Receiver<Chip8ControlMessage>,
+    ) -> tokio::task::JoinHandle<()> {
         let m_display = self.display.clone();
         tokio::spawn(async move {
-            let sleep = time::sleep(Duration::from_millis(0));
-            tokio::pin!(sleep);
-
+            let mut interval = time::interval(Duration::from_secs(1));
+            interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+            tokio::pin!(interval);
+            let mut is_running = false;
             loop {
                 tokio::select! {
-                () = &mut sleep => {
-                sleep.as_mut().reset(Instant::now() + Duration::from_millis(1000));
+                _ = interval.tick() => {
+                if is_running {
+                print!("{}[2J", 27 as char);
+                println!("{}", m_display.lock().unwrap());
+                }
+                },
+                Some(msg) = rx.recv() => {
+                match msg {
+                Chip8ControlMessage::Start => { is_running = true; },
+                Chip8ControlMessage::Stop => { is_running = false; },
+                Chip8ControlMessage::Step => {
                 print!("{}[2J", 27 as char);
                 println!("{}", m_display.lock().unwrap());
                 },
+                _ => {}
+                }
+                }
                 }
             }
-        });
+        })
     }
 
-    pub fn start_timers_thread(&self) {
+    pub fn start_timers_thread(
+        &self,
+        mut rx: Receiver<Chip8ControlMessage>,
+    ) -> tokio::task::JoinHandle<()> {
         let m_timers = self.timers.clone();
         tokio::spawn(async move {
-            let sleep = time::sleep(Duration::from_millis(0));
-            tokio::pin!(sleep);
-
+            let mut interval = time::interval(Duration::from_millis(17));
+            interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+            tokio::pin!(interval);
+            let mut is_running = false;
             loop {
                 tokio::select! {
-                () = &mut sleep => {
-                sleep.as_mut().reset(Instant::now() + Duration::from_millis(17));
+                _ = interval.tick() => {
+                if is_running {
                 let mut timers = m_timers.lock().unwrap();
                 if timers.delay_timer > 0 {
                 timers.delay_timer = timers.delay_timer - 1;
-                            //println!("{}", timers.delay_timer);
+                //println!("{}", timers.delay_timer);
                 }
                 if timers.sound_timer > 0 {
                 timers.sound_timer = timers.sound_timer - 1;
-                            //println!("{}", timers.sound_timer);
+                //println!("{}", timers.sound_timer);
+                }
                 }
                 },
+                Some(msg) = rx.recv() => {
+                match msg {
+                Chip8ControlMessage::Start => { is_running = true; },
+                Chip8ControlMessage::Stop => { is_running = false; },
+                Chip8ControlMessage::Step => {
+                let mut timers = m_timers.lock().unwrap();
+                if timers.delay_timer > 0 {
+                timers.delay_timer = timers.delay_timer - 1;
+                //println!("{}", timers.delay_timer);
+                }
+                if timers.sound_timer > 0 {
+                timers.sound_timer = timers.sound_timer - 1;
+                //println!("{}", timers.sound_timer);
+                }
+                },
+                _ => {}
+                }
+                }
                 }
             }
-        });
+        })
     }
 
-    //pub fn start_cpu_thread() {}
+    pub fn start_cpu_thread(
+        mut self,
+        mut rx: Receiver<Chip8ControlMessage>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_millis(2));
+            interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+            tokio::pin!(interval);
+            let mut is_running = false;
+            loop {
+                tokio::select! {
+                _ = interval.tick() => {
+                if is_running {
+                self.run_next(false);
+                }
+                },
+                Some(msg) = rx.recv() => {
+                match msg {
+                Chip8ControlMessage::Start => { is_running = true; },
+                Chip8ControlMessage::Stop => { is_running = false; },
+                Chip8ControlMessage::Step => {
+                self.run_next(true);
+                },
+                _ => {}
+                }
+                }
+                }
+            }
+        })
+    }
 }
