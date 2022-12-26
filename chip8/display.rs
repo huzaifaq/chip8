@@ -81,11 +81,11 @@ impl Chip8Display {
     }
 
     pub fn unset_pixel(&mut self, x: usize, y: usize) {
-        let w_x = x % 64;
-        let w_y = y % 32;
+        let w_x = x % Chip8Display::WIDTH;
+        let w_y = y % Chip8Display::HEIGHT;
 
         let sub_pixel_x = w_x / 8;
-        let pixel = 1 << (7 - (w_x % 8));
+        let pixel = 128 >> (7 - (w_x % 8));
 
         self.screen_buffer_array[w_y][sub_pixel_x] =
             self.screen_buffer_array[w_y][sub_pixel_x] & !pixel;
@@ -99,7 +99,8 @@ impl Chip8Display {
         }
     }
 
-    pub fn set_debug(&mut self, x: u8, y: u8) {
+    //Adds a red dot at the specified location (There can be only 1 debug pixel set in the screen buffer)
+    pub fn _set_debug(&mut self, x: u8, y: u8) {
         self.debug_x = x;
         self.debug_y = y;
     }

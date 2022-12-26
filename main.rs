@@ -1,31 +1,26 @@
 mod chip8;
+use crate::chip8::thread_messages::Chip8ControlMessage;
 use chip8::Chip8;
-use tokio::time::{self, Instant};
-
-use std::{env, time::Duration};
+use std::env;
+use tokio::sync::mpsc::channel;
 
 #[tokio::main]
 async fn main() -> Result<(), ()> {
     let args: Vec<String> = env::args().collect();
     println!("{:?}", args);
 
-    let mut sys = Chip8::new("BC_test.ch8");
-    sys.start_display_thread();
-    sys.start_timers_thread();
+    let (display_tx, display_rx) = channel(1);
+    let (timer_tx, timer_rx) = channel(1);
+    let (cpu_tx, cpu_rx) = channel(1);
 
-    let _sys_handle = tokio::spawn(async move {
-        let sleep = time::sleep(Duration::from_millis(0));
-        tokio::pin!(sleep);
+    let sys = Chip8::new("roms/BRIX");
+    sys.start_display_thread(display_rx);
+    sys.start_timers_thread(timer_rx);
+    sys.start_cpu_thread(cpu_rx);
 
-        loop {
-            tokio::select! {
-            () = &mut sleep => {
-            sleep.as_mut().reset(Instant::now() + Duration::from_millis(2));
-            sys.run_next(false);
-            },
-            }
-        }
-    });
+    display_tx.send(Chip8ControlMessage::Start).await.unwrap();
+    timer_tx.send(Chip8ControlMessage::Start).await.unwrap();
+    cpu_tx.send(Chip8ControlMessage::Start).await.unwrap();
 
     let mut line: String;
     loop {
@@ -34,6 +29,24 @@ async fn main() -> Result<(), ()> {
         match line.trim() {
             "q" => {
                 break;
+            }
+            "s" => {
+                timer_tx.send(Chip8ControlMessage::Stop).await.unwrap();
+                display_tx.send(Chip8ControlMessage::Stop).await.unwrap();
+                cpu_tx.send(Chip8ControlMessage::Stop).await.unwrap();
+            }
+            "t" => {
+                timer_tx.send(Chip8ControlMessage::Stop).await.unwrap();
+            }
+            "d" => {
+                display_tx.send(Chip8ControlMessage::Stop).await.unwrap();
+            }
+            "c" => {
+                cpu_tx.send(Chip8ControlMessage::Stop).await.unwrap();
+            }
+            "n" => {
+                display_tx.send(Chip8ControlMessage::Step).await.unwrap();
+                cpu_tx.send(Chip8ControlMessage::Step).await.unwrap();
             }
             "" => {}
             _ => {}
