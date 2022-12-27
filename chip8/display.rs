@@ -3,8 +3,6 @@ use std::fmt::Write;
 #[derive(Debug)]
 pub struct Chip8Display {
     screen_buffer_array: [[u8; Chip8Display::WIDTH / 8]; Chip8Display::HEIGHT],
-    debug_x: u8,
-    debug_y: u8,
 }
 
 impl std::fmt::Display for Chip8Display {
@@ -22,16 +20,10 @@ impl std::fmt::Display for Chip8Display {
                             for i in 0..8 {
                                 let bit_mask = 1 << i;
                                 let bit = bit_mask & x.1 > 0;
-                                if self.debug_x as usize == (x.0 * 8 + i)
-                                    && self.debug_y as usize == y.0
-                                {
-                                    write!(&mut acc_x, "🟥").unwrap();
+                                if bit {
+                                    write!(&mut acc_x, "⬜").unwrap();
                                 } else {
-                                    if bit {
-                                        write!(&mut acc_x, "⬜").unwrap();
-                                    } else {
-                                        write!(&mut acc_x, "⬛").unwrap();
-                                    }
+                                    write!(&mut acc_x, "⬛").unwrap();
                                 }
                             }
                             acc_x
@@ -52,8 +44,6 @@ impl Chip8Display {
     pub fn new() -> Chip8Display {
         Chip8Display {
             screen_buffer_array: [[0; 8]; 32],
-            debug_x: 255,
-            debug_y: 255,
         }
     }
 
@@ -97,12 +87,6 @@ impl Chip8Display {
                 *data = 0;
             }
         }
-    }
-
-    //Adds a red dot at the specified location (There can be only 1 debug pixel set in the screen buffer)
-    pub fn _set_debug(&mut self, x: u8, y: u8) {
-        self.debug_x = x;
-        self.debug_y = y;
     }
 
     pub fn get_set_pixel_coords(&self) -> Vec<(f64, f64)> {
