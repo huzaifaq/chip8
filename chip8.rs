@@ -13,17 +13,20 @@ use timers::Chip8Timers;
 use tokio::sync::mpsc::Receiver;
 use tokio::time::{self};
 
+use std::collections::VecDeque;
 use std::{fs, sync::Arc, sync::RwLock, time::Duration};
 
 type SharedDisplay = Arc<RwLock<Chip8Display>>;
 type SharedMemory = Arc<RwLock<Chip8Memory>>;
 type SharedRegisters = Arc<RwLock<Chip8Registers>>;
 type SharedTimers = Arc<RwLock<Chip8Timers>>;
+type SharedPrevInsts = Arc<RwLock<VecDeque<String>>>;
 pub struct Chip8 {
     pub display: SharedDisplay,
     pub memory: SharedMemory,
     pub registers: SharedRegisters,
     pub timers: SharedTimers,
+    pub instructions: SharedPrevInsts,
 }
 
 impl Chip8 {
@@ -35,6 +38,7 @@ impl Chip8 {
             memory: Arc::new(RwLock::new(Chip8Memory::new())),
             registers: Arc::new(RwLock::new(Chip8Registers::new())),
             timers: Arc::new(RwLock::new(Chip8Timers::new())),
+            instructions: Arc::new(RwLock::new(VecDeque::from(vec!["".to_string(); 10]))),
         };
         sys.load_file(filename);
         return sys;
@@ -60,8 +64,7 @@ impl Chip8 {
         s_registers: &SharedRegisters,
         s_display: &SharedDisplay,
         s_timers: &SharedTimers,
-        is_print_inst: bool,
-    ) {
+    ) -> String {
         let mut memory = s_memory.write().unwrap();
         let mut registers = s_registers.write().unwrap();
 
@@ -337,18 +340,18 @@ impl Chip8 {
                         let bit = (s_data & bit_mask) > 0;
                         if bit {
                             let current = display.get_pixel(
-                                (registers.genral[vx as usize] + bit_index) as usize,
+                                registers.genral[vx as usize] as usize + bit_index as usize,
                                 registers.genral[vy as usize] as usize + index,
                             );
                             if (current == bit) && (bit == true) {
                                 display.unset_pixel(
-                                    (registers.genral[vx as usize] + bit_index) as usize,
+                                    registers.genral[vx as usize] as usize + bit_index as usize,
                                     registers.genral[vy as usize] as usize + index,
                                 );
                                 registers.genral[15] = 1; //Set VF = 1 for collision
                             } else {
                                 display.set_pixel(
-                                    (registers.genral[vx as usize] + bit_index) as usize,
+                                    registers.genral[vx as usize] as usize + bit_index as usize,
                                     registers.genral[vy as usize] as usize + index,
                                 );
                             }
@@ -479,14 +482,12 @@ impl Chip8 {
             }
             _ => {}
         }
-
-        if is_print_inst {
-            println!("{:#05X}: {}", registers.program_counter, res);
-        }
         //Increment in program counter after instruction is processed
         if is_inc_program_counter {
             registers.program_counter = registers.program_counter + 2;
         }
+
+        format!("{:#05X}: {}", registers.program_counter, res)
     }
 
     //Start a thread to print display buffer to stdout every second (for debug perpose)
@@ -578,6 +579,7 @@ impl Chip8 {
         let m_timers = self.timers.clone();
         let m_memory = self.memory.clone();
         let m_registers = self.registers.clone();
+        let m_instructions = self.instructions.clone();
         tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_millis(2));
             interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
@@ -587,7 +589,10 @@ impl Chip8 {
                 tokio::select! {
                 _ = interval.tick() => {
                 if is_running {
-                Chip8::run_next(&m_memory,&m_registers,&m_display,&m_timers,false);
+                let res = Chip8::run_next(&m_memory,&m_registers,&m_display,&m_timers);
+                let mut i = m_instructions.write().unwrap();
+                i.push_front(res);
+                i.pop_back();
                 }
                 },
                 Some(msg) = rx.recv() => {
@@ -595,7 +600,10 @@ impl Chip8 {
                 Chip8ControlMessage::Start => { is_running = true; },
                 Chip8ControlMessage::Stop => { is_running = false; },
                 Chip8ControlMessage::Step => {
-                Chip8::run_next(&m_memory,&m_registers,&m_display,&m_timers,true);
+                let res = Chip8::run_next(&m_memory,&m_registers,&m_display,&m_timers);
+                let mut i = m_instructions.write().unwrap();
+                i.push_front(res);
+                i.pop_back();
                 },
                 }
                 }

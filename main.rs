@@ -17,11 +17,11 @@ use tokio::sync::mpsc::channel;
 use tui::{
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout},
-    style::Color,
+    style::{Color, Style},
     symbols,
     widgets::{
         canvas::{Canvas, Points},
-        Block, Borders,
+        Block, Borders, List, ListItem,
     },
     Frame, Terminal,
 };
@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // create app and run it
     let tick_rate = Duration::from_millis(250);
-    let app = App::new("roms/BC_test.ch8");
+    let app = App::new("roms/TEST");
     let res = run_app(&mut terminal, app, tick_rate).await;
 
     // restore terminal
@@ -118,7 +118,6 @@ async fn run_app<B: Backend>(
 
 fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
     let list_coords = app.sys.display.read().unwrap().get_set_pixel_coords();
-
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
@@ -135,12 +134,14 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
         .x_bounds([0.0, Chip8Display::WIDTH as f64])
         .y_bounds([0.0, Chip8Display::HEIGHT as f64]);
     f.render_widget(canvas, chunks[0]);
-    let canvas = Canvas::default()
-        .block(Block::default().borders(Borders::ALL).title("Debug"))
-        .paint(|_ctx| {
-            //ctx.draw(&app.ball);
-        })
-        .x_bounds([10.0, 110.0])
-        .y_bounds([10.0, 110.0]);
-    f.render_widget(canvas, chunks[1]);
+    let instructions = app.sys.instructions.read().unwrap();
+    let items = instructions
+        .iter()
+        .map(|i| ListItem::new(i.to_owned()))
+        .collect::<Vec<ListItem>>();
+
+    let list = List::new(items)
+        .block(Block::default().title("List").borders(Borders::ALL))
+        .style(Style::default().fg(Color::White));
+    f.render_widget(list, chunks[1]);
 }
