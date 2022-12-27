@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 #[derive(Debug)]
 pub struct Chip8Display {
-    screen_buffer_array: [[u8; 64 / 8]; 32],
+    screen_buffer_array: [[u8; Chip8Display::WIDTH / 8]; Chip8Display::HEIGHT],
     debug_x: u8,
     debug_y: u8,
 }
@@ -46,8 +46,8 @@ impl std::fmt::Display for Chip8Display {
 }
 
 impl Chip8Display {
-    const WIDTH: usize = 64;
-    const HEIGHT: usize = 32;
+    pub const WIDTH: usize = 64;
+    pub const HEIGHT: usize = 32;
 
     pub fn new() -> Chip8Display {
         Chip8Display {
@@ -103,5 +103,23 @@ impl Chip8Display {
     pub fn _set_debug(&mut self, x: u8, y: u8) {
         self.debug_x = x;
         self.debug_y = y;
+    }
+
+    pub fn get_set_pixel_coords(&self) -> Vec<(f64, f64)> {
+        let mut res: Vec<(f64, f64)> = Vec::new();
+        for (y, data) in self.screen_buffer_array.iter().enumerate() {
+            for (x_, x_byte) in data.iter().enumerate() {
+                if *x_byte > 0 {
+                    for i in 0..8 {
+                        let bit_mask = 1 << i;
+                        let bit = bit_mask & *x_byte > 0;
+                        if bit {
+                            res.push(((x_ * 8 + i) as f64, (Chip8Display::HEIGHT - y) as f64));
+                        }
+                    }
+                }
+            }
+        }
+        res
     }
 }

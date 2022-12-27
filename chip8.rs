@@ -1,4 +1,4 @@
-mod display;
+pub mod display;
 mod keyboard;
 mod memory;
 mod registers;
@@ -13,13 +13,17 @@ use timers::Chip8Timers;
 use tokio::sync::mpsc::Receiver;
 use tokio::time::{self};
 
-use std::{fs, sync::Arc, sync::Mutex, time::Duration};
+use std::{fs, sync::Arc, sync::RwLock, time::Duration};
 
+type SharedDisplay = Arc<RwLock<Chip8Display>>;
+type SharedMemory = Arc<RwLock<Chip8Memory>>;
+type SharedRegisters = Arc<RwLock<Chip8Registers>>;
+type SharedTimers = Arc<RwLock<Chip8Timers>>;
 pub struct Chip8 {
-    pub display: Arc<Mutex<Chip8Display>>,
-    memory: Chip8Memory,
-    pub registers: Chip8Registers,
-    pub timers: Arc<Mutex<Chip8Timers>>,
+    pub display: SharedDisplay,
+    pub memory: SharedMemory,
+    pub registers: SharedRegisters,
+    pub timers: SharedTimers,
 }
 
 impl Chip8 {
@@ -27,10 +31,10 @@ impl Chip8 {
 
     pub fn new(filename: &str) -> Chip8 {
         let mut sys = Chip8 {
-            display: Arc::new(Mutex::new(Chip8Display::new())),
-            memory: Chip8Memory::new(),
-            registers: Chip8Registers::new(),
-            timers: Arc::new(Mutex::new(Chip8Timers::new())),
+            display: Arc::new(RwLock::new(Chip8Display::new())),
+            memory: Arc::new(RwLock::new(Chip8Memory::new())),
+            registers: Arc::new(RwLock::new(Chip8Registers::new())),
+            timers: Arc::new(RwLock::new(Chip8Timers::new())),
         };
         sys.load_file(filename);
         return sys;
@@ -38,23 +42,33 @@ impl Chip8 {
 
     fn load_file(&mut self, filename: &str) {
         let contents = fs::read(filename).expect("Something went wrong reading the file");
+        let mut memory = self.memory.write().unwrap();
         assert!(
-            contents.len() < (self.memory.raw_array.len() - Chip8::PROGRAM_START_ADDRESS),
+            contents.len() < (memory.raw_array.len() - Chip8::PROGRAM_START_ADDRESS),
             "Cannot load selected file as it is greater than program memory size"
         );
 
         let current_address = Chip8::PROGRAM_START_ADDRESS;
         for (index, data) in contents.iter().enumerate() {
-            self.memory.raw_array[current_address + index] = data.to_owned();
+            memory.raw_array[current_address + index] = data.to_owned();
         }
     }
 
     //Execute current instruction
-    pub fn run_next(&mut self, is_print_inst: bool) {
+    pub fn run_next(
+        s_memory: &SharedMemory,
+        s_registers: &SharedRegisters,
+        s_display: &SharedDisplay,
+        s_timers: &SharedTimers,
+        is_print_inst: bool,
+    ) {
+        let mut memory = s_memory.write().unwrap();
+        let mut registers = s_registers.write().unwrap();
+
         //Each instruction is 2 bytes long
         let instruction = u16::from_ne_bytes([
-            self.memory.raw_array[(self.registers.program_counter + 1) as usize],
-            self.memory.raw_array[self.registers.program_counter as usize],
+            memory.raw_array[(registers.program_counter + 1) as usize],
+            memory.raw_array[registers.program_counter as usize],
         ]);
         let mut res: String = "Unimplemented".to_owned();
         let mut is_inc_program_counter = true;
@@ -64,16 +78,15 @@ impl Chip8 {
                 0x00E0 => {
                     //00E0 - CLS
                     //Clear the display.
-                    self.display.lock().unwrap().clear();
+                    s_display.write().unwrap().clear();
                     res = format!("CLS");
                 }
                 0x00EE => {
                     // 00EE - RET
                     // Return from a subroutine.
                     // The interpreter sets the program counter to the address at the top of the stack, then subtracts 1 from the stack pointer.
-                    self.registers.stack_pointer = self.registers.stack_pointer - 1;
-                    self.registers.program_counter =
-                        self.registers.stack[self.registers.stack_pointer as usize];
+                    registers.stack_pointer = registers.stack_pointer - 1;
+                    registers.program_counter = registers.stack[registers.stack_pointer as usize];
                     res = format!("RET");
                 }
                 0x0000..=0x0FFF => {
@@ -91,7 +104,7 @@ impl Chip8 {
                 // Jump to location nnn.
                 // The interpreter sets the program counter to nnn.
                 let addr = instruction & 0x0FFF;
-                self.registers.program_counter = addr;
+                registers.program_counter = addr;
                 is_inc_program_counter = false;
                 res = format!("JP addr {:#05X}", addr);
             }
@@ -100,10 +113,10 @@ impl Chip8 {
                 // Call subroutine at nnn.
                 // The interpreter increments the stack pointer, then puts the current PC on the top of the stack. The PC is then set to nnn.
                 let addr = instruction & 0x0FFF;
-                self.registers.stack[self.registers.stack_pointer as usize] =
-                    self.registers.program_counter;
-                self.registers.stack_pointer = self.registers.stack_pointer + 1;
-                self.registers.program_counter = addr;
+                let sp = registers.stack_pointer as usize;
+                registers.stack[sp] = registers.program_counter;
+                registers.stack_pointer = registers.stack_pointer + 1;
+                registers.program_counter = addr;
                 is_inc_program_counter = false;
                 res = format!("CALL addr {:#05X}", addr);
             }
@@ -113,8 +126,8 @@ impl Chip8 {
                 // The interpreter compares register Vx to kk, and if they are equal, increments the program counter by 2.
                 let byte = instruction & 0x00FF;
                 let vx = (instruction >> 8) & 0x000F;
-                if self.registers.genral[vx as usize] == byte as u8 {
-                    self.registers.program_counter = self.registers.program_counter + 2;
+                if registers.genral[vx as usize] == byte as u8 {
+                    registers.program_counter = registers.program_counter + 2;
                 }
                 res = format!("SE V{}, {:#04X}", vx, byte);
             }
@@ -124,8 +137,8 @@ impl Chip8 {
                 // The interpreter compares register Vx to kk, and if they are not equal, increments the program counter by 2.
                 let byte = instruction & 0x00FF;
                 let vx = (instruction >> 8) & 0x000F;
-                if self.registers.genral[vx as usize] != byte as u8 {
-                    self.registers.program_counter = self.registers.program_counter + 2;
+                if registers.genral[vx as usize] != byte as u8 {
+                    registers.program_counter = registers.program_counter + 2;
                 }
                 res = format!("SNE V{}, {:#04X}", vx, byte);
             }
@@ -135,8 +148,8 @@ impl Chip8 {
                 // The interpreter compares register Vx to register Vy, and if they are equal, increments the program counter by 2.
                 let vx = (instruction >> 8) & 0x000F;
                 let vy = (instruction >> 4) & 0x000F;
-                if self.registers.genral[vx as usize] == self.registers.genral[vy as usize] {
-                    self.registers.program_counter = self.registers.program_counter + 2;
+                if registers.genral[vx as usize] == registers.genral[vy as usize] {
+                    registers.program_counter = registers.program_counter + 2;
                 }
                 res = format!("SE V{}, V{}", vx, vy);
             }
@@ -146,7 +159,7 @@ impl Chip8 {
                 // The interpreter puts the value kk into register Vx.
                 let byte = instruction & 0x00FF;
                 let vx = (instruction >> 8) & 0x000F;
-                self.registers.genral[vx as usize] = byte as u8;
+                registers.genral[vx as usize] = byte as u8;
                 res = format!("LD V{}, {:#04X}", vx, byte);
             }
             0x7 => {
@@ -155,8 +168,8 @@ impl Chip8 {
                 // Adds the value kk to the value of register Vx, then stores the result in Vx.
                 let byte = instruction & 0x00FF;
                 let vx = (instruction >> 8) & 0x000F;
-                self.registers.genral[vx as usize] =
-                    self.registers.genral[vx as usize].wrapping_add(byte as u8);
+                registers.genral[vx as usize] =
+                    registers.genral[vx as usize].wrapping_add(byte as u8);
                 res = format!("ADD V{}, {:#04X}", vx, byte);
             }
             0x8 => {
@@ -168,7 +181,7 @@ impl Chip8 {
                         // Stores the value of register Vy in register Vx.
                         let vx = (instruction >> 8) & 0x000F;
                         let vy = (instruction >> 4) & 0x000F;
-                        self.registers.genral[vx as usize] = self.registers.genral[vy as usize];
+                        registers.genral[vx as usize] = registers.genral[vy as usize];
                         res = format!("LD V{}, V{}", vx, vy);
                     }
                     0x1 => {
@@ -177,8 +190,8 @@ impl Chip8 {
                         // Performs a bitwise OR on the values of Vx and Vy, then stores the result in Vx. A bitwise OR compares the corrseponding bits from two values, and if either bit is 1, then the same bit in the result is also 1. Otherwise, it is 0.
                         let vx = (instruction >> 8) & 0x000F;
                         let vy = (instruction >> 4) & 0x000F;
-                        self.registers.genral[vx as usize] =
-                            self.registers.genral[vx as usize] | self.registers.genral[vy as usize];
+                        registers.genral[vx as usize] =
+                            registers.genral[vx as usize] | registers.genral[vy as usize];
                         res = format!("OR V{}, V{}", vx, vy);
                     }
                     0x2 => {
@@ -187,8 +200,8 @@ impl Chip8 {
                         // Performs a bitwise AND on the values of Vx and Vy, then stores the result in Vx. A bitwise AND compares the corrseponding bits from two values, and if both bits are 1, then the same bit in the result is also 1. Otherwise, it is 0.
                         let vx = (instruction >> 8) & 0x000F;
                         let vy = (instruction >> 4) & 0x000F;
-                        self.registers.genral[vx as usize] =
-                            self.registers.genral[vx as usize] & self.registers.genral[vy as usize];
+                        registers.genral[vx as usize] =
+                            registers.genral[vx as usize] & registers.genral[vy as usize];
                         res = format!("AND V{}, V{}", vx, vy);
                     }
                     0x3 => {
@@ -197,8 +210,8 @@ impl Chip8 {
                         // Performs a bitwise exclusive OR on the values of Vx and Vy, then stores the result in Vx. An exclusive OR compares the corrseponding bits from two values, and if the bits are not both the same, then the corresponding bit in the result is set to 1. Otherwise, it is 0.
                         let vx = (instruction >> 8) & 0x000F;
                         let vy = (instruction >> 4) & 0x000F;
-                        self.registers.genral[vx as usize] =
-                            self.registers.genral[vx as usize] ^ self.registers.genral[vy as usize];
+                        registers.genral[vx as usize] =
+                            registers.genral[vx as usize] ^ registers.genral[vy as usize];
                         res = format!("XOR V{}, V{}", vx, vy);
                     }
                     0x4 => {
@@ -207,10 +220,10 @@ impl Chip8 {
                         // The values of Vx and Vy are added together. If the result is greater than 8 bits (i.e., > 255,) VF is set to 1, otherwise 0. Only the lowest 8 bits of the result are kept, and stored in Vx.
                         let vx = (instruction >> 8) & 0x000F;
                         let vy = (instruction >> 4) & 0x000F;
-                        let ans = self.registers.genral[vx as usize]
-                            .overflowing_add(self.registers.genral[vy as usize]);
-                        self.registers.genral[vx as usize] = ans.0;
-                        self.registers.genral[15] = ans.1 as u8;
+                        let ans = registers.genral[vx as usize]
+                            .overflowing_add(registers.genral[vy as usize]);
+                        registers.genral[vx as usize] = ans.0;
+                        registers.genral[15] = ans.1 as u8;
                         res = format!("ADD V{}, V{}", vx, vy);
                     }
                     0x5 => {
@@ -219,12 +232,12 @@ impl Chip8 {
                         // If Vx > Vy, then VF is set to 1, otherwise 0. Then Vy is subtracted from Vx, and the results stored in Vx.
                         let vx = (instruction >> 8) & 0x000F;
                         let vy = (instruction >> 4) & 0x000F;
-                        let ans = self.registers.genral[vx as usize]
-                            .overflowing_sub(self.registers.genral[vy as usize]);
-                        self.registers.genral[15] = (!ans.1) as u8;
+                        let ans = registers.genral[vx as usize]
+                            .overflowing_sub(registers.genral[vy as usize]);
+                        registers.genral[15] = (!ans.1) as u8;
                         // Only if no borrow save the answer to Vx else ignore.
                         if !ans.1 {
-                            self.registers.genral[vx as usize] = ans.0;
+                            registers.genral[vx as usize] = ans.0;
                         }
                         res = format!("SUB V{}, V{}", vx, vy);
                     }
@@ -234,9 +247,8 @@ impl Chip8 {
                         // If the least-significant bit of Vx is 1, then VF is set to 1, otherwise 0. Then Vx is divided by 2.
                         let vx = (instruction >> 8) & 0x000F;
                         let vy = (instruction >> 4) & 0x000F;
-                        self.registers.genral[15] = self.registers.genral[vx as usize] & 1;
-                        self.registers.genral[vx as usize] =
-                            self.registers.genral[vx as usize] >> 1;
+                        registers.genral[15] = registers.genral[vx as usize] & 1;
+                        registers.genral[vx as usize] = registers.genral[vx as usize] >> 1;
                         res = format!("SHR V{}, V{}", vx, vy);
                     }
                     0x7 => {
@@ -245,10 +257,10 @@ impl Chip8 {
                         // If Vy > Vx, then VF is set to 1, otherwise 0. Then Vx is subtracted from Vy, and the results stored in Vx.
                         let vx = (instruction >> 8) & 0x000F;
                         let vy = (instruction >> 4) & 0x000F;
-                        let ans = self.registers.genral[vy as usize]
-                            .overflowing_sub(self.registers.genral[vx as usize]);
-                        self.registers.genral[vx as usize] = ans.0;
-                        self.registers.genral[15] = (!ans.1) as u8;
+                        let ans = registers.genral[vy as usize]
+                            .overflowing_sub(registers.genral[vx as usize]);
+                        registers.genral[vx as usize] = ans.0;
+                        registers.genral[15] = (!ans.1) as u8;
                         res = format!("SUBN V{}, V{}", vx, vy);
                     }
                     0xE => {
@@ -256,10 +268,8 @@ impl Chip8 {
                         // Set Vx = Vx SHL 1.
                         // If the most-significant bit of Vx is 1, then VF is set to 1, otherwise to 0. Then Vx is multiplied by 2.
                         let vx = (instruction >> 8) & 0x000F;
-                        self.registers.genral[15] =
-                            ((self.registers.genral[vx as usize] & 0x80) > 0) as u8;
-                        self.registers.genral[vx as usize] =
-                            self.registers.genral[vx as usize] << 1;
+                        registers.genral[15] = ((registers.genral[vx as usize] & 0x80) > 0) as u8;
+                        registers.genral[vx as usize] = registers.genral[vx as usize] << 1;
                         res = format!("SHL V{}", vx);
                     }
                     _ => {}
@@ -271,8 +281,8 @@ impl Chip8 {
                 // The values of Vx and Vy are compared, and if they are not equal, the program counter is increased by 2.
                 let vx = (instruction >> 8) & 0x000F;
                 let vy = (instruction >> 4) & 0x000F;
-                if self.registers.genral[vx as usize] != self.registers.genral[vy as usize] {
-                    self.registers.program_counter = self.registers.program_counter + 2;
+                if registers.genral[vx as usize] != registers.genral[vy as usize] {
+                    registers.program_counter = registers.program_counter + 2;
                 }
                 res = format!("SNE V{}, V{}", vx, vy);
             }
@@ -281,7 +291,7 @@ impl Chip8 {
                 // Set I = nnn.
                 // The value of register I is set to nnn.
                 let addr = instruction & 0x0FFF;
-                self.registers.memory_address = addr;
+                registers.memory_address = addr;
                 res = format!("LD I, addr {:#05X}", addr);
             }
             0xB => {
@@ -289,7 +299,7 @@ impl Chip8 {
                 // Jump to location nnn + V0.
                 // The program counter is set to nnn plus the value of V0.
                 let addr = instruction & 0x0FFF;
-                self.registers.program_counter = (self.registers.genral[0] as u16) + addr;
+                registers.program_counter = (registers.genral[0] as u16) + addr;
                 is_inc_program_counter = false;
                 res = format!("JP V0, addr {:#05X}", addr);
             }
@@ -300,7 +310,7 @@ impl Chip8 {
                 let byte = (instruction & 0x00FF) as u8;
                 let vx = (instruction >> 8) & 0x000F;
                 let r: u8 = rand::random();
-                self.registers.genral[vx as usize] = r & byte;
+                registers.genral[vx as usize] = r & byte;
                 res = format!("RND V{}, {:#04X}", vx, byte);
             }
             0xD => {
@@ -313,13 +323,13 @@ impl Chip8 {
                 let number_bytes = instruction & 0x000F;
                 let vx = (instruction >> 8) & 0x000F;
                 let vy = (instruction >> 4) & 0x000F;
-                let mut display = self.display.lock().unwrap();
+                let mut display = s_display.write().unwrap();
 
                 //Simple implementation can speedup.
                 //Assuming sprite resolution is 8xn.
                 //Get sprite bytes slice
-                let sprite = &self.memory.raw_array[self.registers.memory_address as usize
-                    ..(self.registers.memory_address + number_bytes) as usize];
+                let sprite = &memory.raw_array[registers.memory_address as usize
+                    ..(registers.memory_address + number_bytes) as usize];
 
                 for (index, s_data) in sprite.iter().enumerate() {
                     for bit_index in 0u8..8 {
@@ -327,23 +337,23 @@ impl Chip8 {
                         let bit = (s_data & bit_mask) > 0;
                         if bit {
                             let current = display.get_pixel(
-                                (self.registers.genral[vx as usize] + bit_index) as usize,
-                                self.registers.genral[vy as usize] as usize + index,
+                                (registers.genral[vx as usize] + bit_index) as usize,
+                                registers.genral[vy as usize] as usize + index,
                             );
                             if (current == bit) && (bit == true) {
                                 display.unset_pixel(
-                                    (self.registers.genral[vx as usize] + bit_index) as usize,
-                                    self.registers.genral[vy as usize] as usize + index,
+                                    (registers.genral[vx as usize] + bit_index) as usize,
+                                    registers.genral[vy as usize] as usize + index,
                                 );
-                                self.registers.genral[15] = 1; //Set VF = 1 for collision
+                                registers.genral[15] = 1; //Set VF = 1 for collision
                             } else {
                                 display.set_pixel(
-                                    (self.registers.genral[vx as usize] + bit_index) as usize,
-                                    self.registers.genral[vy as usize] as usize + index,
+                                    (registers.genral[vx as usize] + bit_index) as usize,
+                                    registers.genral[vy as usize] as usize + index,
                                 );
                             }
                         }
-                        //self.display.set_pixel((vx as usize) + index, 1);
+                        //display.set_pixel((vx as usize) + index, 1);
                     }
                 }
                 res = format!("DRW V{}, V{}, {:#03X}", vx, vy, number_bytes);
@@ -376,8 +386,7 @@ impl Chip8 {
                         // Set Vx = delay timer value.
                         // The value of DT is placed into Vx.
                         let vx = (instruction >> 8) & 0x000F;
-                        self.registers.genral[vx as usize] =
-                            self.timers.lock().unwrap().delay_timer;
+                        registers.genral[vx as usize] = s_timers.read().unwrap().delay_timer;
                         res = format!("LD V{}, DT", vx);
                     }
                     0x0A => {
@@ -392,8 +401,7 @@ impl Chip8 {
                         // Set delay timer = Vx.
                         // DT is set equal to the value of Vx.
                         let vx = (instruction >> 8) & 0x000F;
-                        self.timers.lock().unwrap().delay_timer =
-                            self.registers.genral[vx as usize];
+                        s_timers.write().unwrap().delay_timer = registers.genral[vx as usize];
                         res = format!("LD DT, V{}", vx);
                     }
                     0x18 => {
@@ -401,8 +409,7 @@ impl Chip8 {
                         // Set sound timer = Vx.
                         // ST is set equal to the value of Vx.
                         let vx = (instruction >> 8) & 0x000F;
-                        self.timers.lock().unwrap().sound_timer =
-                            self.registers.genral[vx as usize];
+                        s_timers.write().unwrap().sound_timer = registers.genral[vx as usize];
                         res = format!("LD ST, V{}", vx);
                     }
                     0x1E => {
@@ -410,10 +417,9 @@ impl Chip8 {
                         // Set I = I + Vx.
                         // The values of I and Vx are added, and the results are stored in I.
                         let vx = (instruction >> 8) & 0x000F;
-                        self.registers.memory_address = self
-                            .registers
+                        registers.memory_address = registers
                             .memory_address
-                            .wrapping_add(self.registers.genral[vx as usize] as u16);
+                            .wrapping_add(registers.genral[vx as usize] as u16);
                         res = format!("ADD I, V{}", vx);
                     }
                     0x29 => {
@@ -421,8 +427,8 @@ impl Chip8 {
                         // Set I = location of sprite for digit Vx.
                         // The value of I is set to the location for the hexadecimal sprite corresponding to the value of Vx. See section 2.4, Display, for more information on the Chip-8 hexadecimal font.
                         let vx = ((instruction >> 8) & 0x000F) as u8;
-                        self.registers.memory_address =
-                            ((self.registers.genral[vx as usize] & 0x0F) * 5) as u16;
+                        registers.memory_address =
+                            ((registers.genral[vx as usize] & 0x0F) * 5) as u16;
                         res = format!("LD F, V{}", vx);
                     }
                     0x33 => {
@@ -430,18 +436,18 @@ impl Chip8 {
                         // Store BCD representation of Vx in memory locations I, I+1, and I+2.
                         // The interpreter takes the decimal value of Vx, and places the hundreds digit in memory at location in I, the tens digit at location I+1, and the ones digit at location I+2.
                         let vx = (instruction >> 8) & 0x000F;
-                        self.memory.raw_array[self.registers.memory_address as usize] =
-                            (self.registers.genral[vx as usize] / 100) % 10;
-                        self.memory.raw_array[(self.registers.memory_address + 1) as usize] =
-                            (self.registers.genral[vx as usize] / 10) % 10;
-                        self.memory.raw_array[(self.registers.memory_address + 2) as usize] =
-                            (self.registers.genral[vx as usize] / 1) % 10;
+                        memory.raw_array[registers.memory_address as usize] =
+                            (registers.genral[vx as usize] / 100) % 10;
+                        memory.raw_array[(registers.memory_address + 1) as usize] =
+                            (registers.genral[vx as usize] / 10) % 10;
+                        memory.raw_array[(registers.memory_address + 2) as usize] =
+                            (registers.genral[vx as usize] / 1) % 10;
                         res = format!(
                             "LD B, V{} (I: {}, I+1: {}, I+2:{})",
                             vx,
-                            self.memory.raw_array[self.registers.memory_address as usize],
-                            self.memory.raw_array[(self.registers.memory_address + 1) as usize],
-                            self.memory.raw_array[(self.registers.memory_address + 2) as usize]
+                            memory.raw_array[registers.memory_address as usize],
+                            memory.raw_array[(registers.memory_address + 1) as usize],
+                            memory.raw_array[(registers.memory_address + 2) as usize]
                         );
                     }
                     0x55 => {
@@ -449,10 +455,10 @@ impl Chip8 {
                         // Store registers V0 through Vx in memory starting at location I.
                         // The interpreter copies the values of registers V0 through Vx into memory, starting at the address in I.
                         let vx = (instruction >> 8) & 0x000F;
-                        let current_address = self.registers.memory_address;
+                        let current_address = registers.memory_address;
                         for data in 0..=vx {
-                            self.memory.raw_array[(current_address + data) as usize] =
-                                self.registers.genral[data as usize];
+                            memory.raw_array[(current_address + data) as usize] =
+                                registers.genral[data as usize];
                         }
                         res = format!("LD [I], V{}", vx);
                     }
@@ -461,10 +467,10 @@ impl Chip8 {
                         // Read registers V0 through Vx from memory starting at location I.
                         // The interpreter reads values from memory starting at location I into registers V0 through Vx.
                         let vx = (instruction >> 8) & 0x000F;
-                        let current_address = self.registers.memory_address;
+                        let current_address = registers.memory_address;
                         for data in 0..=vx {
-                            self.registers.genral[data as usize] =
-                                self.memory.raw_array[(current_address + data) as usize];
+                            registers.genral[data as usize] =
+                                memory.raw_array[(current_address + data) as usize];
                         }
                         res = format!("LD V{}, [I]", vx);
                     }
@@ -475,16 +481,16 @@ impl Chip8 {
         }
 
         if is_print_inst {
-            println!("{:#05X}: {}", self.registers.program_counter, res);
+            println!("{:#05X}: {}", registers.program_counter, res);
         }
         //Increment in program counter after instruction is processed
         if is_inc_program_counter {
-            self.registers.program_counter = self.registers.program_counter + 2;
+            registers.program_counter = registers.program_counter + 2;
         }
     }
 
-    //Start a thread
-    pub fn start_display_thread(
+    //Start a thread to print display buffer to stdout every second (for debug perpose)
+    pub fn _start_display_thread(
         &self,
         mut rx: Receiver<Chip8ControlMessage>,
     ) -> tokio::task::JoinHandle<()> {
@@ -499,7 +505,7 @@ impl Chip8 {
                 _ = interval.tick() => {
                 if is_running {
                 print!("{}[2J", 27 as char);
-                println!("{}", m_display.lock().unwrap());
+                println!("{}", m_display.read().unwrap());
                 }
                 },
                 Some(msg) = rx.recv() => {
@@ -508,9 +514,8 @@ impl Chip8 {
                 Chip8ControlMessage::Stop => { is_running = false; },
                 Chip8ControlMessage::Step => {
                 print!("{}[2J", 27 as char);
-                println!("{}", m_display.lock().unwrap());
+                println!("{}", m_display.read().unwrap());
                 },
-                _ => {}
                 }
                 }
                 }
@@ -532,7 +537,7 @@ impl Chip8 {
                 tokio::select! {
                 _ = interval.tick() => {
                 if is_running {
-                let mut timers = m_timers.lock().unwrap();
+                let mut timers = m_timers.write().unwrap();
                 if timers.delay_timer > 0 {
                 timers.delay_timer = timers.delay_timer - 1;
                 //println!("{}", timers.delay_timer);
@@ -548,7 +553,7 @@ impl Chip8 {
                 Chip8ControlMessage::Start => { is_running = true; },
                 Chip8ControlMessage::Stop => { is_running = false; },
                 Chip8ControlMessage::Step => {
-                let mut timers = m_timers.lock().unwrap();
+                let mut timers = m_timers.write().unwrap();
                 if timers.delay_timer > 0 {
                 timers.delay_timer = timers.delay_timer - 1;
                 //println!("{}", timers.delay_timer);
@@ -558,7 +563,6 @@ impl Chip8 {
                 //println!("{}", timers.sound_timer);
                 }
                 },
-                _ => {}
                 }
                 }
                 }
@@ -567,9 +571,13 @@ impl Chip8 {
     }
 
     pub fn start_cpu_thread(
-        mut self,
+        &self,
         mut rx: Receiver<Chip8ControlMessage>,
     ) -> tokio::task::JoinHandle<()> {
+        let m_display = self.display.clone();
+        let m_timers = self.timers.clone();
+        let m_memory = self.memory.clone();
+        let m_registers = self.registers.clone();
         tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_millis(2));
             interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
@@ -579,7 +587,7 @@ impl Chip8 {
                 tokio::select! {
                 _ = interval.tick() => {
                 if is_running {
-                self.run_next(false);
+                Chip8::run_next(&m_memory,&m_registers,&m_display,&m_timers,false);
                 }
                 },
                 Some(msg) = rx.recv() => {
@@ -587,9 +595,8 @@ impl Chip8 {
                 Chip8ControlMessage::Start => { is_running = true; },
                 Chip8ControlMessage::Stop => { is_running = false; },
                 Chip8ControlMessage::Step => {
-                self.run_next(true);
+                Chip8::run_next(&m_memory,&m_registers,&m_display,&m_timers,true);
                 },
-                _ => {}
                 }
                 }
                 }
