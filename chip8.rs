@@ -6,10 +6,12 @@ pub mod thread_messages;
 mod timers;
 
 use display::Chip8Display;
+use keyboard::Chip8Keyboard;
 use memory::Chip8Memory;
 use registers::Chip8Registers;
 use thread_messages::Chip8ControlMessage;
 use timers::Chip8Timers;
+
 use tokio::sync::mpsc::Receiver;
 use tokio::time::{self};
 
@@ -21,30 +23,33 @@ type SharedMemory = Arc<RwLock<Chip8Memory>>;
 type SharedRegisters = Arc<RwLock<Chip8Registers>>;
 type SharedTimers = Arc<RwLock<Chip8Timers>>;
 type SharedPrevInsts = Arc<RwLock<VecDeque<String>>>;
+type SharedKeyboard = Arc<RwLock<Chip8Keyboard>>;
 pub struct Chip8 {
     pub display: SharedDisplay,
     pub memory: SharedMemory,
     pub registers: SharedRegisters,
     pub timers: SharedTimers,
     pub instructions: SharedPrevInsts,
+    pub keyboard: SharedKeyboard,
 }
 
 impl Chip8 {
     const PROGRAM_START_ADDRESS: usize = 0x200;
 
     pub fn new(filename: &str) -> Chip8 {
-        let mut sys = Chip8 {
+        let sys = Chip8 {
             display: Arc::new(RwLock::new(Chip8Display::new())),
             memory: Arc::new(RwLock::new(Chip8Memory::new())),
             registers: Arc::new(RwLock::new(Chip8Registers::new())),
             timers: Arc::new(RwLock::new(Chip8Timers::new())),
-            instructions: Arc::new(RwLock::new(VecDeque::from(vec!["".to_string(); 10]))),
+            instructions: Arc::new(RwLock::new(VecDeque::from(vec![" ".to_string(); 10]))),
+            keyboard: Arc::new(RwLock::new(Chip8Keyboard::new())),
         };
         sys.load_file(filename);
         return sys;
     }
 
-    fn load_file(&mut self, filename: &str) {
+    fn load_file(&self, filename: &str) {
         let contents = fs::read(filename).expect("Something went wrong reading the file");
         let mut memory = self.memory.write().unwrap();
         assert!(
@@ -58,12 +63,53 @@ impl Chip8 {
         }
     }
 
+    pub fn load_file_reset(&self, filename: &str) {
+        {
+            let mut display = self.display.write().unwrap();
+            let mut memory = self.memory.write().unwrap();
+            let mut registers = self.registers.write().unwrap();
+            let mut timers = self.timers.write().unwrap();
+            let mut instructions = self.instructions.write().unwrap();
+            let mut keyboard = self.keyboard.write().unwrap();
+            //Display
+            display.clear();
+            //Memory
+            for byte in memory.raw_array.iter_mut() {
+                *byte = u8::MIN;
+            }
+            //Registers
+            for byte in registers.genral.iter_mut() {
+                *byte = u8::MIN;
+            }
+            for byte in registers.special.iter_mut() {
+                *byte = u8::MIN;
+            }
+            for data in registers.stack.iter_mut() {
+                *data = u16::MIN;
+            }
+            registers.memory_address = 0;
+            registers.program_counter = 0;
+            registers.stack_pointer = 0;
+            //Timers
+            timers.delay_timer = 0;
+            timers.sound_timer = 0;
+            //Instruction History;
+            for inst in instructions.iter_mut() {
+                *inst = " ".to_string();
+            }
+            //Keyboard
+            keyboard.reset_keys();
+        }
+        self.load_file(filename);
+    }
+
     //Execute current instruction
     pub fn run_next(
         s_memory: &SharedMemory,
         s_registers: &SharedRegisters,
         s_display: &SharedDisplay,
         s_timers: &SharedTimers,
+        s_keyboard: &SharedKeyboard,
     ) -> String {
         let mut memory = s_memory.write().unwrap();
         let mut registers = s_registers.write().unwrap();
@@ -238,10 +284,7 @@ impl Chip8 {
                         let ans = registers.genral[vx as usize]
                             .overflowing_sub(registers.genral[vy as usize]);
                         registers.genral[15] = (!ans.1) as u8;
-                        // Only if no borrow save the answer to Vx else ignore.
-                        if !ans.1 {
-                            registers.genral[vx as usize] = ans.0;
-                        }
+                        registers.genral[vx as usize] = ans.0;
                         res = format!("SUB V{}, V{}", vx, vy);
                     }
                     0x6 => {
@@ -331,6 +374,7 @@ impl Chip8 {
                 //Simple implementation can speedup.
                 //Assuming sprite resolution is 8xn.
                 //Get sprite bytes slice
+                registers.genral[15] = 0; //Reset VF = 0 for no collision
                 let sprite = &memory.raw_array[registers.memory_address as usize
                     ..(registers.memory_address + number_bytes) as usize];
 
@@ -356,7 +400,6 @@ impl Chip8 {
                                 );
                             }
                         }
-                        //display.set_pixel((vx as usize) + index, 1);
                     }
                 }
                 res = format!("DRW V{}, V{}, {:#03X}", vx, vy, number_bytes);
@@ -369,14 +412,28 @@ impl Chip8 {
                         // Skip next instruction if key with the value of Vx is pressed.
                         // Checks the keyboard, and if the key corresponding to the value of Vx is currently in the down position, PC is increased by 2.
                         let vx = (instruction >> 8) & 0x000F;
-                        res = format!("TODO: SKP V{}", vx);
+                        if s_keyboard
+                            .read()
+                            .unwrap()
+                            .get_key(registers.genral[vx as usize])
+                        {
+                            registers.program_counter = registers.program_counter + 2;
+                        }
+                        res = format!("SKP V{}", vx);
                     }
                     0xA1 => {
                         // ExA1 - SKNP Vx
                         // Skip next instruction if key with the value of Vx is not pressed.
                         // Checks the keyboard, and if the key corresponding to the value of Vx is currently in the up position, PC is increased by 2.
                         let vx = (instruction >> 8) & 0x000F;
-                        res = format!("TODO: SKNP V{}", vx);
+                        if !s_keyboard
+                            .read()
+                            .unwrap()
+                            .get_key(registers.genral[vx as usize])
+                        {
+                            registers.program_counter = registers.program_counter + 2;
+                        }
+                        res = format!("SKNP V{}", vx);
                     }
                     _ => {}
                 }
@@ -482,12 +539,14 @@ impl Chip8 {
             }
             _ => {}
         }
+
+        res = format!("{:#05X}: {}", registers.program_counter, res);
         //Increment in program counter after instruction is processed
         if is_inc_program_counter {
             registers.program_counter = registers.program_counter + 2;
         }
 
-        format!("{:#05X}: {}", registers.program_counter, res)
+        res
     }
 
     //Start a thread to print display buffer to stdout every second (for debug perpose)
@@ -580,6 +639,7 @@ impl Chip8 {
         let m_memory = self.memory.clone();
         let m_registers = self.registers.clone();
         let m_instructions = self.instructions.clone();
+        let m_keyboard = self.keyboard.clone();
         tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_millis(2));
             interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
@@ -589,7 +649,7 @@ impl Chip8 {
                 tokio::select! {
                 _ = interval.tick() => {
                 if is_running {
-                let res = Chip8::run_next(&m_memory,&m_registers,&m_display,&m_timers);
+                let res = Chip8::run_next(&m_memory,&m_registers,&m_display,&m_timers,&m_keyboard);
                 let mut i = m_instructions.write().unwrap();
                 i.push_front(res);
                 i.pop_back();
@@ -600,7 +660,7 @@ impl Chip8 {
                 Chip8ControlMessage::Start => { is_running = true; },
                 Chip8ControlMessage::Stop => { is_running = false; },
                 Chip8ControlMessage::Step => {
-                let res = Chip8::run_next(&m_memory,&m_registers,&m_display,&m_timers);
+                let res = Chip8::run_next(&m_memory,&m_registers,&m_display,&m_timers,&m_keyboard);
                 let mut i = m_instructions.write().unwrap();
                 i.push_front(res);
                 i.pop_back();
