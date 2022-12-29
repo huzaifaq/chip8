@@ -37,8 +37,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // create app and run it
     let tick_rate = Duration::from_millis(16);
+    let key_timeout = Duration::from_millis(250);
     let app = App::new("roms/BRIX");
-    let res = run_app(&mut terminal, app, tick_rate).await;
+    let res = run_app(&mut terminal, app, tick_rate, key_timeout).await;
 
     // restore terminal
     disable_raw_mode()?;
@@ -60,6 +61,7 @@ async fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     app: App,
     tick_rate: Duration, // this defines when the "display" should be redrawn
+    key_timeout: Duration,
 ) -> io::Result<()> {
     let mut last_tick = Instant::now();
     let mut last_key_press = Instant::now();
@@ -71,7 +73,7 @@ async fn run_app<B: Backend>(
     app.sys.start_cpu_thread(cpu_rx);
 
     timer_tx.send(Chip8ControlMessage::Start).await.unwrap();
-    //cpu_tx.send(Chip8ControlMessage::Start).await.unwrap();
+    cpu_tx.send(Chip8ControlMessage::Start).await.unwrap();
 
     loop {
         terminal.draw(|f| ui(f, &app))?;
@@ -122,7 +124,7 @@ async fn run_app<B: Backend>(
             }
         }
 
-        if last_key_press.elapsed() >= Duration::from_millis(500) {
+        if last_key_press.elapsed() >= key_timeout {
             app.sys.keyboard.write().unwrap().reset_keys();
         }
         if last_tick.elapsed() >= tick_rate {
@@ -135,10 +137,10 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
     let list_coords = app.sys.display.read().unwrap().get_set_pixel_coords();
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)].as_ref())
         .split(f.size());
     let canvas = Canvas::default()
-        .marker(symbols::Marker::Block)
+        .marker(symbols::Marker::Braille)
         .block(Block::default().borders(Borders::ALL))
         .paint(|ctx| {
             ctx.draw(&Points {
