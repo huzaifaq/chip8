@@ -53,7 +53,6 @@ impl Chip8Display {
         let w_y = y % Chip8Display::HEIGHT;
 
         let sub_pixel_x = w_x / 8;
-        // 0000 0110
         let pixel = 128 >> (7 - (w_x % 8));
 
         self.screen_buffer_array[w_y][sub_pixel_x] =
