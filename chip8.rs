@@ -549,7 +549,7 @@ impl Chip8 {
         res
     }
 
-    //Start a thread to print display buffer to stdout every second (for debug perpose)
+    //Start a thread to print display buffer to stdout every second (for debug purpose)
     pub fn _start_display_thread(
         &self,
         mut rx: Receiver<Chip8ControlMessage>,
@@ -638,7 +638,7 @@ impl Chip8 {
         let m_timers = self.timers.clone();
         let m_memory = self.memory.clone();
         let m_registers = self.registers.clone();
-        let m_instructions = self.instructions.clone();
+        let m_instructions = self.instructions.clone(); // Used to draw list of instructions for debug purposes
         let m_keyboard = self.keyboard.clone();
         tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_millis(2));

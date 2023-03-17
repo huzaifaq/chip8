@@ -1,0 +1,1 @@
+Implementation of a chip8 emulator that runs in the terminal.

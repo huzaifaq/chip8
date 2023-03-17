@@ -11,8 +11,4 @@ impl Chip8Timers {
             sound_timer: 0,
         }
     }
-
-    // fn process_delay() {}
-
-    // fn process_sound() {}
 }

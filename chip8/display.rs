@@ -47,7 +47,7 @@ impl Chip8Display {
         }
     }
 
-    // Make set pixel return the XOR result and remove get/unset pixel
+    //TODO Make set pixel return the XOR result and remove get/unset pixel
     pub fn set_pixel(&mut self, x: usize, y: usize) {
         let w_x = x % Chip8Display::WIDTH;
         let w_y = y % Chip8Display::HEIGHT;
